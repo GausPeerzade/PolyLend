@@ -55,11 +55,9 @@ contract CoreVault is ERC4626, Ownable {
 
 
     function badDebt(uint256 _actualDebt , uint256 _repayment) public  {
-        uint256 local_actualDebt = _actualDebt;
-        uint256 local_repayment = _repayment;
         onlyMarket();
-        totalBorrowed -= local_actualDebt;
-        IERC20(asset()).transferFrom(msg.sender, address(this), local_repayment);
+        totalBorrowed -= _actualDebt;
+        IERC20(asset()).transferFrom(msg.sender, address(this), _repayment);
     }
 
     function totalAssets() public view override returns (uint256) {

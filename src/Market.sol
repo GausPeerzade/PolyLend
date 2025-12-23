@@ -256,29 +256,22 @@ contract Market is IERC1155Receiver, ReentrancyGuard {
     
     function _calculateMaxBorrow(uint256 collateralAmount) internal view returns (uint256) {
         uint256 price = getLatestPrice();
-        
         uint256 collateralValue = (collateralAmount * price) / 1e20;
-        
         return (collateralValue * ltvRatio) / BASIS_POINTS;
     }
     
     function _calculateDebtWithInterest(address user) internal view returns (uint256) {
         Position memory position = positions[user];
-        
         if (position.borrowedAmount == 0) return 0;
-        
         uint256 timeElapsed = block.timestamp - position.lastInterestUpdate;
         uint256 interestAccrued = (position.borrowedAmount * interestRatePerYear * timeElapsed) 
             / (BASIS_POINTS * SECONDS_PER_YEAR);
-        
         return position.borrowedAmount + interestAccrued;
     }
     
     function _accrueInterest(address user) internal {
         Position storage position = positions[user];
-        
         if (position.borrowedAmount == 0) return;
-        
         uint256 newDebt = _calculateDebtWithInterest(user);
         position.borrowedAmount = newDebt;
         position.lastInterestUpdate = block.timestamp;
@@ -286,14 +279,11 @@ contract Market is IERC1155Receiver, ReentrancyGuard {
     
     function _isLiquidatable(address user) internal view returns (bool) {
         Position memory position = positions[user];
-        
         if (position.borrowedAmount == 0) return false;
-        
         uint256 debt = _calculateDebtWithInterest(user);
         uint256 price = getLatestPrice();
         uint256 collateralValue = (position.collateralAmount * price) / 1e20;
         uint256 maxDebt = (collateralValue * liquidationThreshold) / BASIS_POINTS;
-        
         return debt > maxDebt;
     }
     
