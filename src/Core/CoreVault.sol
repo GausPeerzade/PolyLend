@@ -4,14 +4,15 @@ pragma solidity ^0.8.20;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
+import {
+    ERC4626
+} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 
-contract LiqLayer is ERC4626, Ownable {
+contract CoreVault is ERC4626, Ownable {
     uint256 public totalBorrowed;
 
     mapping(address => bool) public markets;
 
-    //Errors
     error MarketNotAllowed(address market);
     error InsufficientBalance(uint256 balance, uint256 needed);
 
@@ -29,7 +30,7 @@ contract LiqLayer is ERC4626, Ownable {
     }
 
     function borrowLiq(uint256 _amount, address _receiver) public {
-        if (!markets[msg.sender]) revert MarketNotAllowed(msg.sender);
+        onlyMarket();
 
         if (IERC20(asset()).balanceOf(address(this)) < _amount) {
             revert InsufficientBalance(
@@ -43,12 +44,29 @@ contract LiqLayer is ERC4626, Ownable {
     }
 
     function repayLiq(uint256 _amount) public {
-        if (!markets[msg.sender]) revert MarketNotAllowed(msg.sender);
+       onlyMarket();
         IERC20(asset()).transferFrom(msg.sender, address(this), _amount);
-        totalBorrowed -= _amount;
+        if (totalBorrowed < _amount) {
+            totalBorrowed =  0;
+        } else {
+            totalBorrowed -= _amount;
+        }
+    }
+
+
+    function badDebt(uint256 _actualDebt , uint256 _repayment) public  {
+        uint256 local_actualDebt = _actualDebt;
+        uint256 local_repayment = _repayment;
+        onlyMarket();
+        totalBorrowed -= local_actualDebt;
+        IERC20(asset()).transferFrom(msg.sender, address(this), local_repayment);
     }
 
     function totalAssets() public view override returns (uint256) {
         return IERC20(asset()).balanceOf(address(this)) + totalBorrowed;
+    }
+
+    function onlyMarket() public view {
+        if (!markets[msg.sender]) revert MarketNotAllowed(msg.sender);
     }
 }

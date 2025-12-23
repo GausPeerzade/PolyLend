@@ -1,161 +1,323 @@
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
-import "./interfaces/IPolyMarket.sol";
-import "./LiqLayer.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC1155} from "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
+import {IERC1155Receiver} from "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ICoreVault} from "./interfaces/ICoreVault.sol";
+import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
 
-contract MarketPOC is ERC1155Holder {
-    IERC20 public constant USDC =
-        IERC20(0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174);
-    IPolyMarket public constant CONDITIONAL_TOKENS =
-        IPolyMarket(0x4D97DCd97eC945f40cF65F87097ACe5EA0476045);
-
-    address public immutable liqLayer;
-
-    mapping(address => Position) public positions;
-
-    bytes32 public conditionId;
-    bytes32 public parentCollectionId = bytes32(0);
-    bytes32 public collectionIdYes;
-    bytes32 public collectionIdNo;
-    uint256 public positionIdYes;
-    uint256 public positionIdNo;
-
-    address public owner;
-    uint256 public mockPrice;
-
+contract Market is IERC1155Receiver, ReentrancyGuard {
+    ICoreVault public immutable coreVault;
+    IERC1155 public immutable polymarketCTF;
+    IERC20 public immutable usdcToken;
+    AggregatorV3Interface public immutable priceFeed;
+    
+    uint256 public immutable collateralTokenId;
+    uint256 public immutable interestRatePerYear;
+    uint256 public immutable ltvRatio;
+    uint256 public immutable liquidationThreshold;
+    uint256 public immutable liquidationDiscount;
+    
+    uint256 private constant BASIS_POINTS = 10000;
+    uint256 private constant SECONDS_PER_YEAR = 365 days;
+    
     struct Position {
-        uint256 collateralBalance;
-        uint256 debt;
-        uint256 lastUpdatedBlock;
+        uint256 collateralAmount;
+        uint256 borrowedAmount;
+        uint256 lastInterestUpdate;
     }
-
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Not owner");
-        _;
-    }
-
+    
+    mapping(address => Position) public positions;
+    
+    event Deposit(address indexed user, uint256 amount);
+    event Withdraw(address indexed user, uint256 amount);
+    event Borrow(address indexed user, uint256 amount);
+    event Repay(address indexed user, uint256 amount, uint256 interest);
+    event Liquidate(
+        address indexed liquidator,
+        address indexed borrower,
+        uint256 collateralSeized,
+        uint256 debtRepaid
+    );
+    
+    error InsufficientCollateral();
+    error ExceedsMaxBorrow();
+    error InsufficientBorrow();
+    error NotLiquidatable();
+    error InsufficientBalance();
+    error InvalidAmount();
+    error Unauthorized();
+    error StalePrice();
+    error InvalidPrice();
+    
     constructor(
-        bytes32 _conditionId,
-        uint256 _initialPrice,
-        address _liqLayer
+        address _coreVault,
+        address _polymarketCTF,
+        address _priceFeed,
+        uint256 _collateralTokenId,
+        uint256 _interestRatePerYear,
+        uint256 _ltvRatio,
+        uint256 _liquidationThreshold,
+        uint256 _liquidationDiscount
     ) {
-        owner = msg.sender;
-        liqLayer = _liqLayer;
-        conditionId = _conditionId;
-        collectionIdYes = keccak256(
-            abi.encodePacked(parentCollectionId, conditionId, uint256(1))
-        );
-        collectionIdNo = keccak256(
-            abi.encodePacked(parentCollectionId, conditionId, uint256(2))
-        );
-        positionIdYes = uint256(
-            keccak256(abi.encodePacked(address(USDC), collectionIdYes))
-        );
-        positionIdNo = uint256(
-            keccak256(abi.encodePacked(address(USDC), collectionIdNo))
-        );
-
-        mockPrice = _initialPrice;
+        coreVault = ICoreVault(_coreVault);
+        polymarketCTF = IERC1155(_polymarketCTF);
+        usdcToken = IERC20(ICoreVault(_coreVault).asset());
+        priceFeed = AggregatorV3Interface(_priceFeed);
+        collateralTokenId = _collateralTokenId;
+        interestRatePerYear = _interestRatePerYear;
+        ltvRatio = _ltvRatio;
+        liquidationThreshold = _liquidationThreshold;
+        liquidationDiscount = _liquidationDiscount;
     }
-
-    function setMockPrice(uint256 _price) external onlyOwner {
-        mockPrice = _price;
-    }
-
-    function getLTV(address _user) public view returns (uint256) {
-        Position memory position = positions[_user];
-        if (position.collateralBalance == 0) return 0;
-        uint256 collValue = (position.collateralBalance * mockPrice) / 1e18;
-        if (collValue == 0) return type(uint256).max;
-        return (position.debt * 100) / collValue;
-    }
-
-    function depositCollateral(uint256 amount, address _user) external {
-        CONDITIONAL_TOKENS.safeTransferFrom(
+    
+    function deposit(uint256 amount) external nonReentrant {
+        if (amount == 0) revert InvalidAmount();
+        
+        Position storage position = positions[msg.sender];
+        
+        polymarketCTF.safeTransferFrom(
             msg.sender,
             address(this),
-            positionIdYes,
+            collateralTokenId,
             amount,
             ""
         );
-        Position storage position = positions[_user];
-        position.collateralBalance += amount;
-        position.lastUpdatedBlock = block.number;
+        
+        position.collateralAmount += amount;
+        
+        if (position.lastInterestUpdate == 0) {
+            position.lastInterestUpdate = block.timestamp;
+        }
+        
+        emit Deposit(msg.sender, amount);
     }
-
-    function borrow(address _user, uint256 amount) external {
-        Position storage position = positions[_user];
-        uint256 collValue = (position.collateralBalance * mockPrice) / 1e18;
-        require(position.debt + amount <= collValue / 2, "Exceeds 50% LTV");
-        position.debt += amount;
-        LiqLayer(liqLayer).borrowLiq(amount, address(this));
-        USDC.transfer(msg.sender, amount);
-        position.lastUpdatedBlock = block.number;
-    }
-
-    function repay(address _user, uint256 amount) external {
-        USDC.transferFrom(msg.sender, address(this), amount);
-
-        USDC.approve(address(liqLayer), amount);
-        LiqLayer(liqLayer).repayLiq(amount);
-        Position storage position = positions[_user];
-        position.debt -= amount;
-        position.lastUpdatedBlock = block.number;
-    }
-
-    function withdrawCollateral(address _user, uint256 amount) external {
-        Position storage position = positions[_user];
-        position.collateralBalance -= amount;
-        uint256 collValue = (position.collateralBalance * mockPrice) / 1e18;
-        require(position.debt <= collValue / 2, "Would exceed 50% LTV");
-        CONDITIONAL_TOKENS.safeTransferFrom(
+    
+    function withdraw(uint256 amount) external nonReentrant {
+        Position storage position = positions[msg.sender];
+        
+        if (amount == 0) revert InvalidAmount();
+        if (position.collateralAmount < amount) revert InsufficientBalance();
+        
+        _accrueInterest(msg.sender);
+        
+        uint256 newCollateral = position.collateralAmount - amount;
+        uint256 maxBorrow = _calculateMaxBorrow(newCollateral);
+        
+        if (position.borrowedAmount > maxBorrow) revert InsufficientCollateral();
+        
+        position.collateralAmount = newCollateral;
+        
+        polymarketCTF.safeTransferFrom(
             address(this),
             msg.sender,
-            positionIdYes,
+            collateralTokenId,
             amount,
             ""
         );
+        
+        emit Withdraw(msg.sender, amount);
     }
-
-    function liquidate(address _user) external {
-        require(getLTV(_user) >= 77, "Not liquidatable");
-        Position storage position = positions[_user];
-
-        uint256 price = mockPrice;
-        uint256 seizeAmount = (position.debt * 1e18) / price;
-        require(
-            seizeAmount <= position.collateralBalance,
-            "Insufficient collateral"
-        );
-
-        CONDITIONAL_TOKENS.safeTransferFrom(
-            msg.sender,
+    
+    function borrow(uint256 amount) external nonReentrant {
+        if (amount == 0) revert InvalidAmount();
+        
+        Position storage position = positions[msg.sender];
+        
+        if (position.collateralAmount == 0) revert InsufficientCollateral();
+        
+        _accrueInterest(msg.sender);
+        
+        uint256 maxBorrow = _calculateMaxBorrow(position.collateralAmount);
+        uint256 newBorrowAmount = position.borrowedAmount + amount;
+        
+        if (newBorrowAmount > maxBorrow) revert ExceedsMaxBorrow();
+        
+        position.borrowedAmount = newBorrowAmount;
+        
+        coreVault.borrowLiq(amount, msg.sender);
+        
+        emit Borrow(msg.sender, amount);
+    }
+    
+    function repay(uint256 amount) external nonReentrant {
+        if (amount == 0) revert InvalidAmount();
+        
+        Position storage position = positions[msg.sender];
+        
+        _accrueInterest(msg.sender);
+        
+        if (position.borrowedAmount == 0) revert InsufficientBorrow();
+        
+        uint256 repayAmount = amount > position.borrowedAmount 
+            ? position.borrowedAmount 
+            : amount;
+        
+        uint256 interest = repayAmount > position.borrowedAmount 
+            ? 0 
+            : position.borrowedAmount - repayAmount;
+        
+        position.borrowedAmount -= repayAmount;
+        position.lastInterestUpdate = block.timestamp;
+        
+        usdcToken.transferFrom(msg.sender, address(this), repayAmount);
+        
+        usdcToken.approve(address(coreVault), repayAmount);
+        
+        coreVault.repayLiq(repayAmount);
+        
+        emit Repay(msg.sender, repayAmount, interest);
+    }
+    
+    function liquidate(address borrower, uint256 repayAmount) external nonReentrant {
+        if (borrower == msg.sender) revert Unauthorized();
+        
+        Position storage position = positions[borrower];
+        
+        _accrueInterest(borrower);
+        
+        if (!_isLiquidatable(borrower)) revert NotLiquidatable();
+        
+        uint256 debtToRepay = repayAmount > position.borrowedAmount 
+            ? position.borrowedAmount 
+            : repayAmount;
+        
+        uint256 price = getLatestPrice();
+        uint256 collateralValue = (debtToRepay * 1e20) / price;
+        uint256 collateralWithDiscount = (collateralValue * (BASIS_POINTS + liquidationDiscount)) / BASIS_POINTS;
+        
+        if (collateralWithDiscount > position.collateralAmount) {
+            collateralWithDiscount = position.collateralAmount;
+        }
+        
+        position.borrowedAmount -= debtToRepay;
+        position.collateralAmount -= collateralWithDiscount;
+        
+        usdcToken.transferFrom(msg.sender, address(this), debtToRepay);
+        
+        uint256 collateralValueRecovered = (collateralWithDiscount * price) / 1e20;
+        
+        if (collateralValueRecovered < debtToRepay) {
+            usdcToken.approve(address(coreVault), collateralValueRecovered);
+            coreVault.badDebt(debtToRepay, collateralValueRecovered);
+        } else {
+            usdcToken.approve(address(coreVault), debtToRepay);
+            coreVault.repayLiq(debtToRepay);
+        }
+        
+        polymarketCTF.safeTransferFrom(
             address(this),
-            positionIdNo,
-            seizeAmount,
+            msg.sender,
+            collateralTokenId,
+            collateralWithDiscount,
             ""
         );
-
-        uint256[] memory partition = new uint256[](2);
-        partition[0] = 1;
-        partition[1] = 2;
-        CONDITIONAL_TOKENS.mergePositions(
-            USDC,
-            parentCollectionId,
-            conditionId,
-            partition,
-            seizeAmount
-        );
-
-        position.collateralBalance -= seizeAmount;
-        position.debt = 0;
-        position.lastUpdatedBlock = block.number;
-
-        uint256 priceNo = 1e6 - price;
-        uint256 reimbursement = (seizeAmount * priceNo) / 1e18;
-        USDC.transfer(msg.sender, reimbursement);
+        
+        emit Liquidate(msg.sender, borrower, collateralWithDiscount, debtToRepay);
+    }
+    
+    function getPosition(address user) external view returns (
+        uint256 collateral,
+        uint256 debt,
+        uint256 healthFactor
+    ) {
+        Position memory position = positions[user];
+        collateral = position.collateralAmount;
+        debt = _calculateDebtWithInterest(user);
+        
+        if (debt == 0) {
+            healthFactor = type(uint256).max;
+        } else {
+            uint256 price = getLatestPrice();
+            uint256 collateralValue = (collateral * price) / 1e20;
+            healthFactor = (collateralValue * BASIS_POINTS) / debt;
+        }
+    }
+    
+    function getLatestPrice() public view returns (uint256) {
+        (
+            uint80 roundId,
+            int256 price,
+            ,
+            uint256 updatedAt,
+            uint80 answeredInRound
+        ) = priceFeed.latestRoundData();
+        
+        if (block.timestamp > updatedAt + 3600) revert StalePrice();
+        
+        if (answeredInRound < roundId) revert StalePrice();
+        
+        if (price <= 0) revert InvalidPrice();
+        
+        return uint256(price);
+    }
+    
+    function _calculateMaxBorrow(uint256 collateralAmount) internal view returns (uint256) {
+        uint256 price = getLatestPrice();
+        
+        uint256 collateralValue = (collateralAmount * price) / 1e20;
+        
+        return (collateralValue * ltvRatio) / BASIS_POINTS;
+    }
+    
+    function _calculateDebtWithInterest(address user) internal view returns (uint256) {
+        Position memory position = positions[user];
+        
+        if (position.borrowedAmount == 0) return 0;
+        
+        uint256 timeElapsed = block.timestamp - position.lastInterestUpdate;
+        uint256 interestAccrued = (position.borrowedAmount * interestRatePerYear * timeElapsed) 
+            / (BASIS_POINTS * SECONDS_PER_YEAR);
+        
+        return position.borrowedAmount + interestAccrued;
+    }
+    
+    function _accrueInterest(address user) internal {
+        Position storage position = positions[user];
+        
+        if (position.borrowedAmount == 0) return;
+        
+        uint256 newDebt = _calculateDebtWithInterest(user);
+        position.borrowedAmount = newDebt;
+        position.lastInterestUpdate = block.timestamp;
+    }
+    
+    function _isLiquidatable(address user) internal view returns (bool) {
+        Position memory position = positions[user];
+        
+        if (position.borrowedAmount == 0) return false;
+        
+        uint256 debt = _calculateDebtWithInterest(user);
+        uint256 price = getLatestPrice();
+        uint256 collateralValue = (position.collateralAmount * price) / 1e20;
+        uint256 maxDebt = (collateralValue * liquidationThreshold) / BASIS_POINTS;
+        
+        return debt > maxDebt;
+    }
+    
+    function onERC1155Received(
+        address,
+        address,
+        uint256,
+        uint256,
+        bytes memory
+    ) public virtual override returns (bytes4) {
+        return this.onERC1155Received.selector;
+    }
+    
+    function onERC1155BatchReceived(
+        address,
+        address,
+        uint256[] memory,
+        uint256[] memory,
+        bytes memory
+    ) public virtual override returns (bytes4) {
+        return this.onERC1155BatchReceived.selector;
+    }
+    
+    function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+        return interfaceId == type(IERC1155Receiver).interfaceId;
     }
 }
