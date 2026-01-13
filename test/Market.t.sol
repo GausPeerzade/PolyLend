@@ -41,12 +41,7 @@ contract MarketTest is Test {
         factory = new MarketFactory(address(vault), address(polymarket));
 
         address marketAddress = factory.createMarket(
-            address(oracle),
-            TOKEN_ID,
-            INTEREST_RATE,
-            LTV_RATIO,
-            LIQUIDATION_THRESHOLD,
-            LIQUIDATION_DISCOUNT
+            address(oracle), TOKEN_ID, INTEREST_RATE, LTV_RATIO, LIQUIDATION_THRESHOLD, LIQUIDATION_DISCOUNT
         );
 
         market = Market(marketAddress);
@@ -73,7 +68,7 @@ contract MarketTest is Test {
 
         market.deposit(depositAmount);
 
-        (uint256 collateral, , ) = market.getPosition(alice);
+        (uint256 collateral,,) = market.getPosition(alice);
         assertEq(collateral, depositAmount);
         assertEq(polymarket.balanceOf(alice, TOKEN_ID), 900 ether);
         assertEq(polymarket.balanceOf(address(market), TOKEN_ID), depositAmount);
@@ -89,7 +84,7 @@ contract MarketTest is Test {
 
         market.withdraw(50 ether);
 
-        (uint256 collateral, , ) = market.getPosition(alice);
+        (uint256 collateral,,) = market.getPosition(alice);
         assertEq(collateral, 50 ether);
         assertEq(polymarket.balanceOf(alice, TOKEN_ID), 950 ether);
 
@@ -120,7 +115,7 @@ contract MarketTest is Test {
         market.borrow(borrowAmount);
 
         assertEq(usdc.balanceOf(alice), balanceBefore + borrowAmount);
-        (, uint256 debt, ) = market.getPosition(alice);
+        (, uint256 debt,) = market.getPosition(alice);
         assertEq(debt, borrowAmount);
 
         vm.stopPrank();
@@ -134,7 +129,7 @@ contract MarketTest is Test {
         market.deposit(depositAmount);
 
         uint256 maxBorrow = (100e6 * LTV_RATIO) / 10000;
-        
+
         vm.expectRevert();
         market.borrow(maxBorrow + 1);
 
@@ -153,7 +148,7 @@ contract MarketTest is Test {
         usdc.approve(address(market), borrowAmount);
         market.repay(borrowAmount);
 
-        (, uint256 debt, ) = market.getPosition(alice);
+        (, uint256 debt,) = market.getPosition(alice);
         assertEq(debt, 0);
 
         vm.stopPrank();
@@ -171,8 +166,8 @@ contract MarketTest is Test {
         vm.warp(block.timestamp + 365 days);
         oracle.updatePrice(INITIAL_PRICE);
 
-        (, uint256 debt, ) = market.getPosition(alice);
-        
+        (, uint256 debt,) = market.getPosition(alice);
+
         uint256 expectedInterest = (borrowAmount * INTEREST_RATE) / 10000;
         assertApproxEqAbs(debt, borrowAmount + expectedInterest, 1e6);
 
@@ -194,7 +189,7 @@ contract MarketTest is Test {
 
         vm.startPrank(liquidator);
 
-        (uint256 collateralBefore, uint256 debtBefore, ) = market.getPosition(alice);
+        (uint256 collateralBefore, uint256 debtBefore,) = market.getPosition(alice);
         uint256 collateralValue = (collateralBefore * 65000000) / 1e20;
         uint256 maxAllowedDebt = (collateralValue * LIQUIDATION_THRESHOLD) / 10000;
         assertTrue(debtBefore > maxAllowedDebt);
@@ -202,7 +197,7 @@ contract MarketTest is Test {
         usdc.approve(address(market), borrowAmount);
         market.liquidate(alice, borrowAmount);
 
-        (, uint256 debtAfter, ) = market.getPosition(alice);
+        (, uint256 debtAfter,) = market.getPosition(alice);
         assertEq(debtAfter, 0);
 
         assertTrue(polymarket.balanceOf(liquidator, TOKEN_ID) > 0);
@@ -244,12 +239,12 @@ contract MarketTest is Test {
         polymarket.setApprovalForAll(address(market), true);
         market.deposit(100 ether);
 
-        (, , uint256 healthBefore) = market.getPosition(alice);
+        (,, uint256 healthBefore) = market.getPosition(alice);
         assertEq(healthBefore, type(uint256).max);
 
         market.borrow(40e6);
 
-        (, , uint256 healthAfter) = market.getPosition(alice);
+        (,, uint256 healthAfter) = market.getPosition(alice);
         assertTrue(healthAfter > LTV_RATIO);
         assertTrue(healthAfter < type(uint256).max);
 
@@ -269,8 +264,8 @@ contract MarketTest is Test {
         market.borrow(60e6);
         vm.stopPrank();
 
-        (, uint256 aliceDebt, ) = market.getPosition(alice);
-        (, uint256 bobDebt, ) = market.getPosition(bob);
+        (, uint256 aliceDebt,) = market.getPosition(alice);
+        (, uint256 bobDebt,) = market.getPosition(bob);
 
         assertEq(aliceDebt, 30e6);
         assertEq(bobDebt, 60e6);
@@ -299,7 +294,7 @@ contract MarketTest is Test {
         usdc.approve(address(market), 20e6);
         market.repay(20e6);
 
-        (, uint256 debt, ) = market.getPosition(alice);
+        (, uint256 debt,) = market.getPosition(alice);
         assertEq(debt, 20e6);
 
         vm.stopPrank();
@@ -412,12 +407,7 @@ contract MarketTest is Test {
         vm.startPrank(owner);
 
         address newMarketAddress = factory.createMarket(
-            address(oracle),
-            2,
-            INTEREST_RATE,
-            LTV_RATIO,
-            LIQUIDATION_THRESHOLD,
-            LIQUIDATION_DISCOUNT
+            address(oracle), 2, INTEREST_RATE, LTV_RATIO, LIQUIDATION_THRESHOLD, LIQUIDATION_DISCOUNT
         );
 
         Market newMarket = Market(newMarketAddress);

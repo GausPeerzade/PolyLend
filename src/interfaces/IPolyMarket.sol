@@ -4,13 +4,7 @@ pragma solidity ^0.8.0;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 interface IPolyMarket {
-    function safeTransferFrom(
-        address from,
-        address to,
-        uint256 id,
-        uint256 value,
-        bytes calldata data
-    ) external;
+    function safeTransferFrom(address from, address to, uint256 id, uint256 value, bytes calldata data) external;
 
     function mergePositions(
         IERC20 collateralToken,
@@ -24,7 +18,7 @@ interface IPolyMarket {
         IERC20 collateralToken,
         bytes32 parentCollectionId,
         bytes32 conditionId,
-        uint[] calldata partition,
-        uint amount
+        uint256[] calldata partition,
+        uint256 amount
     ) external;
 }

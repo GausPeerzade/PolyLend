@@ -7,10 +7,10 @@ import {Market} from "./Market.sol";
 contract MarketFactory is Ownable {
     address public immutable coreVault;
     address public immutable polymarketCTF;
-    
+
     address[] public allMarkets;
     mapping(address => bool) public isMarket;
-    
+
     event MarketCreated(
         address indexed market,
         uint256 indexed tokenId,
@@ -20,14 +20,14 @@ contract MarketFactory is Ownable {
         uint256 liquidationDiscount,
         address priceFeed
     );
-    
+
     error InvalidParameter();
-    
+
     constructor(address _coreVault, address _polymarketCTF) Ownable(msg.sender) {
         coreVault = _coreVault;
         polymarketCTF = _polymarketCTF;
     }
-    
+
     function createMarket(
         address priceFeed,
         uint256 tokenId,
@@ -39,10 +39,11 @@ contract MarketFactory is Ownable {
         if (priceFeed == address(0)) revert InvalidParameter();
         if (interestRatePerYear == 0) revert InvalidParameter();
         if (ltvRatio == 0 || ltvRatio >= 10000) revert InvalidParameter();
-        if (liquidationThreshold <= ltvRatio || liquidationThreshold >= 10000) 
+        if (liquidationThreshold <= ltvRatio || liquidationThreshold >= 10000) {
             revert InvalidParameter();
+        }
         if (liquidationDiscount >= 10000) revert InvalidParameter();
-        
+
         market = address(
             new Market(
                 coreVault,
@@ -55,29 +56,23 @@ contract MarketFactory is Ownable {
                 liquidationDiscount
             )
         );
-        
+
         allMarkets.push(market);
         isMarket[market] = true;
-        
+
         emit MarketCreated(
-            market,
-            tokenId,
-            interestRatePerYear,
-            ltvRatio,
-            liquidationThreshold,
-            liquidationDiscount,
-            priceFeed
+            market, tokenId, interestRatePerYear, ltvRatio, liquidationThreshold, liquidationDiscount, priceFeed
         );
     }
-    
+
     function getMarketCount() external view returns (uint256) {
         return allMarkets.length;
     }
-    
+
     function getMarket(uint256 index) external view returns (address) {
         return allMarkets[index];
     }
-    
+
     function getAllMarkets() external view returns (address[] memory) {
         return allMarkets;
     }
